@@ -2,7 +2,9 @@ import os
 import cv2
 import time
 import copy
+import heapq
 import numpy as np
+import pprint
 import threading
 from PIL import Image
 from multiprocessing import Process, Manager
@@ -204,17 +206,37 @@ def compare_with_sample_image_multi_process(input_sample_data, input_image_data,
     """
     manager = Manager()
     result_list = manager.list()
+    diff_rate_list = manager.list()
     p_list = []
     for search_direction in input_settings['event_points'].keys():
         parallel_run_settings = copy.deepcopy(input_settings)
         parallel_run_settings['search_direction'] = search_direction
-        args = [input_sample_data, input_image_data, parallel_run_settings, result_list]
+        args = [input_sample_data, input_image_data, parallel_run_settings, result_list, diff_rate_list]
         p_list.append(Process(target=parallel_compare_image, args=args))
         p_list[-1].start()
     for p in p_list:
         p.join()
     map_result_list = sorted(map(dict, result_list), key=lambda k: k['time_seq'])
     logger.info(map_result_list)
+    if len(map_result_list) == 0:
+        logger.info('Images miss with sample.')
+    else:
+        logger.info('Images HIT with sample!')
+
+    # the data in diff_rate_list will be (event_name, img_fn_key, diff_rate)
+    diff_rate_by_event = {}
+    for event_name, img_fn_key, diff_val in diff_rate_list:
+        if event_name not in diff_rate_by_event:
+            diff_rate_by_event[event_name] = list()
+        # append (img_fn_key, diff_rate) into event's diff_rate list
+        diff_rate_by_event[event_name].append((img_fn_key, diff_val))
+
+    for event, img_and_diff in diff_rate_by_event.items():
+        # data format (img_fn_key, diff_rate), find 3 smallest by diff_rate
+        top_3_smallest_diff_list = heapq.nsmallest(3, img_and_diff, key=lambda val_tuple: val_tuple[1])
+        logger.info('Top 3 Smallest Difference of Event [{event}]:\n{min_diff_rate}'.
+                    format(event=event, min_diff_rate=pprint.pformat(top_3_smallest_diff_list)))
+
     return map_result_list
 
 
@@ -241,7 +263,7 @@ def get_search_range(input_time_stamp, input_fps, input_image_list_len=0, input_
     return search_range
 
 
-def parallel_compare_image(input_sample_data, input_image_data, input_settings, result_list):
+def parallel_compare_image(input_sample_data, input_image_data, input_settings, result_list, diff_rate_list):
     # init value
     sample_dct = None
     image_fn_list = copy.deepcopy(input_image_data.keys())
@@ -251,7 +273,7 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
     search_margin = input_settings.get('search_margin', 10)
     search_range = get_search_range(input_settings['exec_timestamp_list'], input_settings['default_fps'],
                                     len(input_image_data), search_margin)
-    total_search_range = input_settings['default_fps'] * 20
+    total_search_range = input_settings['default_fps'] * search_margin * 2
     if input_settings['search_direction'] == 'backward_search':
         start_index = search_range[1] - 1
         end_index = max(search_range[0], start_index - total_search_range)
@@ -267,9 +289,22 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
         forward_search = True
     else:
         forward_search = False
+    logger.info('Starting {forward_backward} Comparing, from {start} to {end} ...'
+                .format(forward_backward='Forward' if forward_search else 'Backward',
+                        start=start_index,
+                        end=end_index))
+
     for event_point in input_settings['event_points'][input_settings['search_direction']]:
         event_name = event_point['event']
         search_target = event_point['search_target']
+
+        logger.info('Comapre event [{event_name}] at [{search_target}]: {forward_backward} from {start} to {end}'
+                    .format(event_name=event_name,
+                            search_target=search_target,
+                            forward_backward='Forward' if forward_search else 'Backward',
+                            start=start_index,
+                            end=end_index))
+
         shift_result_flag = event_point.get('shift_result', False)
         # get corresponding dct by event name
         for sample_index in input_sample_data:
@@ -298,11 +333,16 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
                 if search_target in input_image_data[img_fn_key]:
                     current_img_dct = convert_to_dct(input_image_data[img_fn_key][search_target], skip_status_bar_fraction)
                     # assign customized threshold to comparison function if its in settings list
-                    if 'threshold' in input_settings:
-                        compare_result = compare_two_images(sample_dct, current_img_dct, input_settings['threshold'])
-                    else:
-                        compare_result = compare_two_images(sample_dct, current_img_dct)
+                    threshold_value = input_settings.get('threshold', 0.0003)
+                    compare_result, diff_rate = compare_two_images(sample_dct, current_img_dct, threshold_value)
+
+                    # record the diff_rate
+                    diff_rate_list.append((event_name, img_fn_key, diff_rate))
+
                     if compare_result:
+                        logger.debug('Match {img_index} {img_filename}'.format(img_index=img_index,
+                                                                               img_filename=img_fn_key))
+
                         if img_index == start_index:
                             logger.debug(
                                 "Find matched file in boundary of search range, event point might out of search range.")
@@ -311,20 +351,26 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
                                 if start_index == search_range[0]:
                                     break
                                 start_index = max(img_index - total_search_range / 2, search_range[0])
+                                logger.debug('Change start: {start}'.format(start=start_index))
                             else:
                                 # if start index is already at boundary then break
                                 if start_index == search_range[3] - 1:
                                     break
                                 start_index = min(img_index + total_search_range / 2, search_range[3] - 1)
+                                logger.debug('Change start: {start}'.format(start=start_index))
                             img_index = start_index
                         else:
                             # shift one index to avoid boundary matching two events at the same time
                             if forward_search:
                                 start_index = img_index - 1
                                 end_index = min(search_range[3] - 1, start_index + total_search_range)
+                                logger.debug('Change start: {start}; end: {end}'.format(start=start_index,
+                                                                                        end=end_index))
                             else:
                                 start_index = img_index + 1
                                 end_index = max(search_range[0], start_index - total_search_range)
+                                logger.debug('Change start: {start}; end: {end}'.format(start=start_index,
+                                                                                        end=end_index))
 
                             # using shifted image index as result if search result's flag is set
                             if shift_result_flag:
@@ -345,16 +391,16 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
                         img_index -= 1
 
 
-def compare_two_images(dct_obj_1, dct_obj_2, threshold=0.0003):
+def compare_two_images(dct_obj_1, dct_obj_2, threshold):
     match = False
     try:
         row1, cols1 = dct_obj_1.shape
         row2, cols2 = dct_obj_2.shape
 
         if (row1 == row2) and (cols1 == cols2):
-            mismatch_rate = np.sum(np.absolute(np.subtract(dct_obj_1, dct_obj_2))) / (row1 * cols1)
-            if mismatch_rate <= threshold:
+            diff_rate = np.sum(np.absolute(np.subtract(dct_obj_1, dct_obj_2))) / (row1 * cols1)
+            if diff_rate <= threshold:
                 match = True
     except Exception as e:
         logger.error(e)
-    return match
+    return match, diff_rate

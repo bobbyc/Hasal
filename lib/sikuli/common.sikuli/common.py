@@ -51,6 +51,12 @@ class General():
     def paste(self):
         type("v", self.control)
 
+    def delete(self):
+        if self.os.lower() == 'mac':
+            type(Key.DELETE)
+        else:
+            type(Key.BACKSPACE)
+
     def capLock(self, lock):
         if lock != Key.isLockOn(Key.CAPS_LOCK):
             type(Key.CAPS_LOCK)
@@ -67,3 +73,7 @@ class General():
     def infolog_enable(self, choice=1):
         Settings.ActionLogs = choice
         Settings.InfoLogs = choice
+
+    def system_print(self, content):
+        sys.stdout.write(content + '\n')
+        sys.stdout.flush()

@@ -26,6 +26,7 @@ class facebook():
         self.club_post_area = Pattern("pics/facebook_club_post_area.png").similar(0.70)
         self.personal_post_area = Pattern("pics/facebook_personal_post_area.png").similar(0.70)
         self.post_area_focused = Pattern("pics/facebook_post_area_focused.png").similar(0.70)
+        self.home_post_area_focused = Pattern("pics/facebook_home_post_area_focused.png").similar(0.70)
         self.club_delete_post_button = Pattern("pics/facebook_club_delete_post_button.png").similar(0.85)
         self.club_post_area_upload = Pattern("pics/facebook_club_post_area_upload.png").similar(0.70)
         self.club_post_marker = Pattern("pics/facebook_club_post_marker.png").similar(0.70)
@@ -42,20 +43,20 @@ class facebook():
         self.share_menu = Pattern("pics/facebook_share_menu.png").similar(0.70)
         self.save_button = Pattern("pics/facebook_save_button.png").similar(0.70)
         self.club_post_menu_delete = Pattern("pics/facebook_club_post_menu_delete.png").similar(0.70)
+        self.messenger_header = Pattern("pics/facebook_messenger_header.png").similar(0.70)
+        self.right_panel_contact = Pattern("pics/facebook_contact.png").similar(0.70)
+        self.chat_tab_close_button = Pattern("pics/facebook_chat_tab_close_button.png").similar(0.70)
 
         self.sampleImg1 = os.path.join(os.path.dirname(os.path.realpath(__file__)), "content", "sample_1.jpg")
 
     def wait_for_loaded(self):
-        default_timeout = getAutoWaitTimeout()
-        setAutoWaitTimeout(10)
-        wait(self.fb_logo)
-        setAutoWaitTimeout(default_timeout)
+        wait(self.fb_logo, 15)
+
+    def wait_for_messenger_loaded(self):
+        wait(self.messenger_header, 15)
 
     def focus_window(self):
-        default_timeout = getAutoWaitTimeout()
-        setAutoWaitTimeout(10)
-        click(self.fb_logo.targetOffset(0, 15))
-        setAutoWaitTimeout(default_timeout)
+        click(self.fb_logo.targetOffset(0, 15), 10)
 
     def post_content(self, location=None, content_type=None, input_string=None):
         if not location or not input_string or not content_type:
@@ -190,9 +191,9 @@ class facebook():
     def click_post_area_home(self, type='center'):
         if type == 'center':
             click(self.home_post_area)
-            wait(self.post_area_focused)
+            wait(self.home_post_area_focused)
         elif type == 'photo_video':
-            click(self.home_post_area.targetOffset(-180, -60))
+            click(self.home_post_area.targetOffset(-180, 50))
             waitVanish(self.home_post_area, 10)
 
     # base on post type to click different areas from club
@@ -247,3 +248,8 @@ class facebook():
         content = ucode(f.read())
         f.close()
         return content
+
+    # focus on comment box of any post
+    def focus_comment_box(self):
+        wait(self.post_action)
+        click(self.post_action)
