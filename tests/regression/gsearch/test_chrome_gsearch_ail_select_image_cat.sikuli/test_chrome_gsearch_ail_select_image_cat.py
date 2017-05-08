@@ -3,7 +3,7 @@
 sys.path.append(sys.argv[2])
 import os
 import common
-import facebook
+import gsearch
 import shutil
 import browser
 import time
@@ -11,37 +11,32 @@ import time
 # Disable Sikuli action and info log
 com = common.General()
 com.infolog_enable(0)
+com.set_mouse_delay(0)
 
 chrome = browser.Chrome()
-fb = facebook.facebook()
+gs = gsearch.Gsearch()
 
 chrome.clickBar()
 chrome.enterLink(sys.argv[3])
-fb.wait_for_loaded()
+gs.wait_gimage_loaded()
 
 sleep(2)
-setAutoWaitTimeout(10)
-
+gs.hover_result_image(1, 1)
 sample2_fp = os.path.join(sys.argv[4], sys.argv[5].replace('sample_1', 'sample_2'))
 
-sleep(5)
+sleep(2)
 capture_width = int(sys.argv[6])
 capture_height = int(sys.argv[7])
 
-# Set mouse move delay time to 0 for immediately action requirement
-Settings.MoveMouseDelay = 0
-hover(fb.right_panel_contact.targetOffset(0, 15))
-mouseDown(Button.LEFT)
-capimg2 = capture(0, 0, capture_width, capture_height)
 t1 = time.time()
+capimg2 = capture(0, 0, capture_width, capture_height)
 
-com.system_print('[log] Mouse Click - Button Up')
+mouseDown(Button.LEFT)
+com.system_print('[log]  Mouse up on first image')
 mouseUp(Button.LEFT)
-mouseMove(fb.right_panel_contact.targetOffset(0, 50))
-sleep(0.1)
+# gs.click_result_image(1, 1)
+sleep(1)
 t2 = time.time()
 com.updateJson({'t1': t1, 't2': t2}, sys.argv[8])
 shutil.move(capimg2, sample2_fp.replace(os.path.splitext(sample2_fp)[1], '.png'))
-click(fb.chat_tab_close_button)
-if not waitVanish(fb.chat_tab_close_button):
-    exit(1)
+com.set_mouse_delay()
