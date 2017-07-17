@@ -39,6 +39,10 @@ class MainRunner(object):
     dirpath = '.'
     defaultOutputPath = 'output'
 
+    class NoRunningFilter(logging.Filter):
+        def filter(self, record):
+            return not record.msg.startswith('Execution')
+
     def __init__(self, dirpath='.'):
         '''
         local path for load config
@@ -60,6 +64,9 @@ class MainRunner(object):
         observer.schedule(event_handler, self.dirpath, recursive=True)
         observer.start()
 
+        my_filter = self.NoRunningFilter()
+        logging.getLogger("apscheduler.scheduler").addFilter(my_filter)
+
     def load_dir(self, folder):
         (dirpath, dirnames, filenames) = os.walk(folder).next()
         for fname in filenames:
@@ -74,18 +81,30 @@ class MainRunner(object):
         with open("agent.log", 'w+') as f:
             f.write(fp + " was loaded!")
         data = {}
-        with open(fp) as in_data:
+        loaded = False
+        for _ in range(10):
             try:
-                data = json.load(in_data)
-                data['name'] = "Jenkins Job"
-                data['path'] = fp
+                with open(fp) as in_data:
+                    data = json.load(in_data)
+                    # default will load JOB_NAME parameter in Jenkins created json file
+                    data['name'] = data.get('JOB_NAME', "Jenkins Job")
+                    data['path'] = fp
+                    loaded = True
             except ValueError as e:
                 logger.warning(fp + " loaded failed: " + e.message)
                 return None
-        interval = 30
-        if 'interval' in data:
-            interval = int(data['interval'])
+            except Exception as e:
+                logger.warning("File is not ready. Wait 1 second for another try.")
+                time.sleep(1)
 
+        if not loaded:
+            logger.warning(fp + " is not ready for 10 seconds.")
+            return None
+
+        # load interval value from Jenkins created json file (default : 30 )
+        interval = int(data.get('interval', 30))
+
+        # load outputpath and defaultoutputpath from Jenkins created json file
         if 'output' in data:
             if 'defaultOutputPath' in data['output']:
                 self.defaultOutputPath = data['output']['defaultOutputPath']
@@ -106,8 +125,8 @@ class MainRunner(object):
 
         else:  # Create new
             logger.info("Create new runner [%s]" % fp)
-            module_path = "hasalTask"
-            object_name = "HasalTask"
+            module_path = data.get('AGENT_MODULE_PATH', "hasalTask")
+            object_name = data.get('AGENT_OBJECT_NAME', "HasalTask")
             try:
                 runner_module = getattr(importlib.import_module(
                                         module_path), object_name)

@@ -15,6 +15,19 @@ class Cv2Converter(object):
         search_range = []
         return_result = {}
         vidcap = cv2.VideoCapture(input_data['video_fp'])
+
+        # make sure the video file is opened, ready for convert to images
+        for _ in range(60):
+            if vidcap.isOpened():
+                break
+            else:
+                time.sleep(1)
+                vidcap = cv2.VideoCapture(input_data['video_fp'])
+        if not vidcap.isOpened():
+            logger.debug('Video file cannot open: {}'.format(input_data['video_fp']))
+            return None
+        logger.debug('Video file is opened: {}'.format(input_data['video_fp']))
+
         if hasattr(cv2, 'CAP_PROP_FPS'):
             header_fps = vidcap.get(cv2.CAP_PROP_FPS)
         else:
@@ -47,7 +60,7 @@ class Cv2Converter(object):
                 in_search_flag = False
                 str_image_fn = "image_%05d.bmp" % img_cnt
                 str_image_fp = os.path.join(input_data['output_img_dp'], str_image_fn)
-                if not input_data['exec_timestamp_list'] or (search_range[0] <= img_cnt <= search_range[3]):
+                if not input_data.get('exec_timestamp_list') or (search_range[0] <= img_cnt <= search_range[3]):
                     result, image = vidcap.read()
                     cv2.imwrite(str_image_fp, image)
                     bol_write_flag = True
