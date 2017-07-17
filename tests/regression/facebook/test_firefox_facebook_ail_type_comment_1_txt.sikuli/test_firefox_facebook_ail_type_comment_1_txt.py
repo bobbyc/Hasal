@@ -1,41 +1,64 @@
 # if you are putting your test script folders under {git project folder}/tests/, it will work fine.
 # otherwise, you either add it to system path before you run or hard coded it in here.
-# win7 threshold 0.003
-sys.path.append(sys.argv[2])
+
+INPUT_LIB_PATH = sys.argv[1]
+sys.path.append(INPUT_LIB_PATH)
+
 import os
-import common
+import basecase
 import facebook
+
 import shutil
 import browser
 import time
 
-# Disable Sikuli action and info log
-com = common.General()
-com.infolog_enable(0)
 
-ff = browser.Firefox()
-fb = facebook.facebook()
+class Case(basecase.SikuliInputLatencyCase):
 
-ff.clickBar()
-ff.enterLink(sys.argv[3])
-fb.wait_for_loaded()
+    def run(self):
+        sample1_fp = os.path.join(self.INPUT_IMG_SAMPLE_DIR_PATH, self.INPUT_IMG_OUTPUT_SAMPLE_1_NAME)
+        sample1_file_path = sample1_fp.replace(os.path.splitext(sample1_fp)[1], '.png')
+        capture_width = int(self.INPUT_RECORD_WIDTH)
+        capture_height = int(self.INPUT_RECORD_HEIGHT)
 
-sleep(2)
-setAutoWaitTimeout(10)
-fb.focus_comment_box()
+        # Disable Sikuli action and info log
+        self.common.infolog_enable(False)
+        Settings.MoveMouseDelay = 0
+        setAutoWaitTimeout(10)
 
-sample2_fp = os.path.join(sys.argv[4], sys.argv[5].replace('sample_1', 'sample_2'))
+        ff = browser.Firefox()
+        fb = facebook.facebook()
 
-sleep(2)
-capture_width = int(sys.argv[6])
-capture_height = int(sys.argv[7])
+        ff.clickBar()
+        ff.enterLink(self.INPUT_TEST_TARGET)
+        fb.wait_for_loaded()
+        sleep(2)
 
-t1 = time.time()
-capimg2 = capture(0, 0, capture_width, capture_height)
+        # Customized Region
+        customized_region_name = 'end'
+        type_area_component = [
+            ['facebook_type_comment_win.png', 0, 0],
+        ]
+        type_area = self.find_match_region(type_area_component, similarity=0.80)
+        self.set_override_region_settings(customized_region_name, type_area)
+        click(type_area)
+        sleep(0.2)
 
-com.system_print('[log]  TYPE "a"')
-type("a")
-sleep(1)
-t2 = time.time()
-com.updateJson({'t1': t1, 't2': t2}, sys.argv[8])
-shutil.move(capimg2, sample2_fp.replace(os.path.splitext(sample2_fp)[1], '.png'))
+        # Record T1, and capture the snapshot image
+        # Input Latency Action
+        screenshot, t1 = fb.il_type('a', capture_width, capture_height)
+
+        # In normal condition, a should appear within 200ms,
+        # but if lag happened, that could lead the show up after 200 ms,
+        # and that will cause the calculation of AIL much smaller than expected.
+        sleep(0.2)
+
+        # Record T2
+        t2 = time.time()
+
+        self.common.updateJson({'t1': t1, 't2': t2}, self.INPUT_TIMESTAMP_FILE_PATH)
+        shutil.move(screenshot, sample1_file_path)
+
+
+case = Case(sys.argv)
+case.run()

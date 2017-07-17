@@ -23,7 +23,6 @@ _virtualenv
 HasalServer.log.*
 stage/*
 docs/*
-appveyor.yml
 ! thirdParty/userChrome.css
 ! thirdParty/extensions
 ! thirdParty/obsConfigs
@@ -42,6 +41,7 @@ appveyor.yml
 thirdParty/*
 # creds files
 client_secrets.json
+github.json
 mycreds.txt
 client_secret_mozhasalvideo.json
 mozhasalvideo.yaml

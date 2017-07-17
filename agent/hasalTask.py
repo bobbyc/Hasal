@@ -5,7 +5,7 @@ import json
 import tarfile
 import zipfile
 import shutil
-import subprocess
+from lib.thirdparty.tee import system2
 
 
 class HasalTask(object):
@@ -19,6 +19,12 @@ class HasalTask(object):
     DEFAULT_AGENT_STATUS_DIR = os.path.join(os.getcwd(), "agent_status")
     DEFAULT_AGENT_JOB_STATUS = {'BEGIN': 'begin', 'FINISH': 'finish', 'EXCEPTION': 'exception'}
     DEFAULT_DATA_EXPIRE_DAY = 7
+    DEFAULT_CONFIG_DN = "configs"
+    DEFAULT_CONFIG_NAME = "default.json"
+    JENKINS_CONFIG_NAME = "jenkins.json"
+    DEFAULT_SUITE_NAME = "suite.txt"
+    JENKINS_SUITE_NAME = "jenkins_suite.txt"
+    DEFAULT_INDEX_CONFIG_NAME = "inputLatencyAnimationDctGenerator.json"
 
     def __init__(self, name, **kwargs):
         self.name = name
@@ -27,12 +33,13 @@ class HasalTask(object):
         self.read_configuration(**kwargs)
 
         # init variables
-        if 'BUILD_NUMBER' in self.configurations:
-            self.DEFAULT_JOB_LOG_FN = self.configurations['BUILD_NUMBER'] + ".log"
-            self.BUILD_NO = self.configurations['BUILD_NUMBER']
-        else:
-            self.DEFAULT_JOB_LOG_FN = "job.log"
-            self.BUILD_NO = self.configurations['BUILD_NUMBER']
+        self.DEFAULT_JOB_LOG_FN = self.configurations.get('BUILD_TAG', "jenkins-unknown-0") + ".log"
+        self.BUILD_TAG = self.configurations.get('BUILD_TAG', 'jenkins-unknown-0')
+        self.CURRENT_WORKING_DIR = os.path.abspath(self.configurations.get('HASAL_WORKSPACE', os.getcwd()))
+        self.DEFAULT_CONFIG_DP = os.path.join(self.CURRENT_WORKING_DIR, self.DEFAULT_CONFIG_DN)
+
+        # lambda function
+        self.str2bool = lambda x: x.lower() in ['true', 'yes', 'y', '1', 'ok']
 
     def update(self, **kwargs):
         if 'name' in kwargs:
@@ -43,54 +50,84 @@ class HasalTask(object):
         self.configurations = kwargs
         print self.configurations
 
-    def update_svr_config(self):
-        updated_key = ['svr_addr', 'svr_port', 'project_name']
-        config_dict = {}
-        for key in self.configurations:
-            if key.lower() in updated_key:
-                config_dict[key.lower()] = self.configurations[key]
-        with open('svrConfig.json', 'w') as svrconfig_fh:
-            json.dump(config_dict, svrconfig_fh)
+    def create_suite_file(self):
+        default_suite_fp = os.path.join(self.CURRENT_WORKING_DIR, self.DEFAULT_SUITE_NAME)
+        jenkins_suite_fp = os.path.join(self.CURRENT_WORKING_DIR, self.JENKINS_SUITE_NAME)
+        case_list_str = self.configurations.get('CASE_LIST', None)
+        if case_list_str:
+            case_list = case_list_str.split(",")
+        else:
+            with open(default_suite_fp) as fh:
+                case_list = fh.readlines()
+        with open(jenkins_suite_fp, 'w') as write_fh:
+            for case_path in case_list:
+                write_fh.write(case_path.strip() + '\n')
+        return jenkins_suite_fp
+
+    def create_online_config(self):
+        config_dn = "online"
+        default_config_fp = os.path.join(self.DEFAULT_CONFIG_DP, config_dn, self.DEFAULT_CONFIG_NAME)
+        output_config_fp = os.path.join(self.DEFAULT_CONFIG_DP, config_dn, self.JENKINS_CONFIG_NAME)
+        with open(default_config_fp) as fh:
+            config_data = json.load(fh)
+        config_data['enable'] = self.str2bool(self.configurations.get('ENABLE_ONLINE', "false"))
+        config_data['perfherder-revision'] = self.configurations.get('PERFHERDER_REVISION', "")
+        config_data['perfherder-pkg-platform'] = self.configurations.get('PERFHERDER_PKG_PLATFORM', "")
+        config_data['perfherder-suitename'] = self.configurations.get('PERFHERDER_SUITE_NAME', "")
+        config_data['svr-config']['svr_addr'] = self.configurations.get('SVR_ADDR', "127.0.0.1")
+        config_data['svr-config']['svr_port'] = self.configurations.get('SVR_PORT', "1234")
+        config_data['svr-config']['project_name'] = self.configurations.get('PROJECT_NAME', "hasal")
+        with open(output_config_fp, 'w') as write_fh:
+            json.dump(config_data, write_fh)
+        return output_config_fp
+
+    def create_exec_config(self):
+        config_dn = "exec"
+        default_config_fp = os.path.join(self.DEFAULT_CONFIG_DP, config_dn, self.DEFAULT_CONFIG_NAME)
+        output_config_fp = os.path.join(self.DEFAULT_CONFIG_DP, config_dn, self.JENKINS_CONFIG_NAME)
+        with open(default_config_fp) as fh:
+            config_data = json.load(fh)
+        config_data['max-run'] = int(self.configurations.get('MAX_RUN', 30))
+        config_data['max-retry'] = int(self.configurations.get('MAX_RETRY', 15))
+        config_data['advance'] = self.str2bool(self.configurations.get('ENABLE_ADVANCE', "false"))
+        config_data['comment'] = self.configurations.get('EXEC_COMMENT', "<today>")
+        config_data['exec-suite-fp'] = self.create_suite_file()
+        config_data['output-result-ipynb-file'] = self.str2bool(self.configurations.get('OUTPUT_RESULT_IPYNB_FILE', "false"))
+        config_data['output-result-video-file'] = self.str2bool(self.configurations.get('OUTPUT_RESULT_VIDEO_FILE', "true"))
+        with open(output_config_fp, 'w') as write_fh:
+            json.dump(config_data, write_fh)
+        return output_config_fp
+
+    def create_firefox_config(self):
+        config_dn = "firefox"
+        default_config_fp = os.path.join(self.DEFAULT_CONFIG_DP, config_dn, self.configurations.get('FIREFOX_CONFIG_NAME', self.DEFAULT_CONFIG_NAME))
+        output_config_fp = os.path.join(self.DEFAULT_CONFIG_DP, config_dn, self.JENKINS_CONFIG_NAME)
+        with open(default_config_fp) as fh:
+            config_data = json.load(fh)
+
+        # you can add the config modification here to reflect Jenkins's setting
+
+        with open(output_config_fp, 'w') as write_fh:
+            json.dump(config_data, write_fh)
+        return output_config_fp
+
+    def create_index_config(self):
+        config_dn = "index"
+        default_config_fp = os.path.join(self.DEFAULT_CONFIG_DP, config_dn, self.configurations.get('INDEX_CONFIG_NAME', self.DEFAULT_INDEX_CONFIG_NAME))
+        output_config_fp = os.path.join(self.DEFAULT_CONFIG_DP, config_dn, self.JENKINS_CONFIG_NAME)
+        with open(default_config_fp) as fh:
+            config_data = json.load(fh)
+
+        # you can add the config modification here to reflect Jenkins's setting
+
+        with open(output_config_fp, 'w') as write_fh:
+            json.dump(config_data, write_fh)
+        return output_config_fp
 
     def generate_command_list(self):
-        result_list = ['python', 'runtest.py', self.configurations['TYPE']]
-        suite_fn = ".".join(['suite', self.configurations['TYPE'], self.configurations['SUITE']])
-        if self.configurations['SUITE'] == "others":
-            # Generate others suite file for this job
-            with open(suite_fn, "w") as suite_fh:
-                case_name_list = self.configurations['OTHERS'].split(",")
-                for case_name in case_name_list:
-                    if self.configurations['TYPE'] == 're':
-                        case_full_name = ".".join(
-                            ['tests', 'regression', case_name.split("_")[2], case_name])
-                    else:
-                        case_full_name = os.sep.join(['tests', 'pilot', case_name.split("_")[2], case_name])
-                    suite_fh.write(case_full_name + os.linesep)
-        else:
-            # Generate suite file for selected web application
-            if self.configurations['TYPE'] == 're':
-                case_dir = os.path.join(os.getcwd(), 'tests', 'regression', self.configurations['SUITE'])
-                with open(suite_fn, 'w') as suite_fh:
-                    for f_name in os.listdir(case_dir):
-                        if f_name.endswith(".py") and f_name != "__init__.py":
-                            case_name = ".".join(['tests', 'regression', self.configurations['SUITE'], f_name.split(".")[0]])
-                            suite_fh.write(case_name + os.linesep)
-            else:
-                case_dir = os.path.join(os.getcwd(), 'tests', 'pilot', self.configurations['SUITE'])
-                with open(suite_fn, 'w') as suite_fh:
-                    for f_name in os.listdir(case_dir):
-                        if f_name.endswith(".sikuli"):
-                            case_name = os.sep.join(['tests', 'pilot', self.configurations['SUITE'], f_name])
-                            suite_fh.write(case_name + os.linesep)
-        result_list.append(suite_fn)
-
-        # Combine the parameter with cmd list
-        for key in self.configurations:
-            if key.startswith("--"):
-                if self.configurations[key] == 'true':
-                    result_list.append(key.lower())
-                elif self.configurations[key] != 'false':
-                    result_list.append(key.lower() + "=" + self.configurations[key])
+        result_list = ['python', 'runtest.py', '--firefox-config', self.create_firefox_config(), '--index-config',
+                       self.create_index_config(), '--exec-config', self.create_exec_config(), '--online-config',
+                       self.create_online_config()]
         return result_list
 
     def deploy_fx_pkg(self):
@@ -108,6 +145,8 @@ class HasalTask(object):
         else:
             firefox_fp = self.FIREFOX_BIN_MAC_FP
         # Create and check backup
+        # Move default firefox to backup folder, and we want to always keep one copy of default firefox package,
+        # so we won't always replace the backup one.
         backup_path = firefox_fp + ".bak"
         if os.path.exists(backup_path):
             if os.path.exists(firefox_fp):
@@ -116,7 +155,8 @@ class HasalTask(object):
                 else:
                     shutil.rmtree(firefox_fp)
         else:
-            os.rename(firefox_fp, backup_path)
+            if os.path.exists(firefox_fp):
+                os.rename(firefox_fp, backup_path)
 
         if sys.platform == "linux2":
             src_link = os.path.join(os.getcwd(), "firefox", "firefox")
@@ -159,6 +199,11 @@ class HasalTask(object):
         return True
 
     def init_environment(self):
+        # remove created log
+        if os.path.exists(self.DEFAULT_JOB_LOG_FN):
+            os.remove(self.DEFAULT_JOB_LOG_FN)
+            print "WARNING: job.log [%s] exist, removed right now!" % self.DEFAULT_JOB_LOG_FN
+
         # kill legacy process
         if sys.platform == "linux2":
             DEFAULT_TASK_KILL_LIST = ["avconv", "firefox", "chrome"]
@@ -177,42 +222,45 @@ class HasalTask(object):
         if os.path.exists(self.DEFAULT_AGENT_STATUS_DIR) is False:
             os.mkdir(self.DEFAULT_AGENT_STATUS_DIR)
 
-        # remove created log
-        if os.path.exists(self.DEFAULT_JOB_LOG_FN):
-            os.remove(self.DEFAULT_JOB_LOG_FN)
-            print "WARNING: job.log [%s] exist, removed right now!" % self.DEFAULT_JOB_LOG_FN
-
     def touch_status_file(self, status):
-        current_status_fp = os.path.join(self.DEFAULT_AGENT_STATUS_DIR, self.BUILD_NO + "." + status)
+        current_status_fp = os.path.join(self.DEFAULT_AGENT_STATUS_DIR, self.BUILD_TAG + "." + status)
         with open(current_status_fp, 'w') as write_fh:
             write_fh.write(" ")
 
-    def run(self):
-        print "INFO: Job [%s] start running" % self.src_conf_path
+    def teardown_job(self):
+        # touch finish status
+        self.touch_status_file(self.DEFAULT_AGENT_JOB_STATUS['FINISH'])
 
+    def run(self):
         # clean up the environment
         self.init_environment()
+
+        # job start running log
+        print "INFO: Job [%s] start running" % self.src_conf_path
 
         # touch begin status
         self.touch_status_file(self.DEFAULT_AGENT_JOB_STATUS['BEGIN'])
 
         # start running
-        with open(self.DEFAULT_JOB_LOG_FN, "w+") as log_fh:
-            print "INFO: start to deploy fx pkg"
-            self.deploy_fx_pkg()
-            print "INFO: start to trigger runtest.py"
-            cmd_list = self.generate_command_list()
-            print " ".join(cmd_list)
-            self.update_svr_config()
-            subprocess.call(cmd_list, stdout=log_fh, stderr=log_fh, env=os.environ.copy())
+        print "INFO: start to deploy Firefox package"
+        self.deploy_fx_pkg()
+        print "INFO: generate new config for Jenkins running Hasal"
+        cmd_list = self.generate_command_list()
+        print "INFO: start to trigger runtest.py"
+        str_exec_cmd = " ".join(cmd_list)
+        print str_exec_cmd
+        try:
+            system2(str_exec_cmd, logger=self.DEFAULT_JOB_LOG_FN, stdout=True, exec_env=os.environ.copy())
+        except Exception as e:
+            print e.message
 
         # remove json file
         if os.path.exists(self.src_conf_path):
             os.remove(self.src_conf_path)
             print "INFO: running test finished! Json configuration file [%s] removed!" % self.src_conf_path
 
-        # touch finish status
-        self.touch_status_file(self.DEFAULT_AGENT_JOB_STATUS['FINISH'])
+        # teardown of this task
+        self.teardown_job()
 
     def onstop(self):
         print "===== onstop ====="
@@ -220,8 +268,8 @@ class HasalTask(object):
         if os.path.exists(self.src_conf_path):
             os.remove(self.src_conf_path)
             print "INFO: onstop event, json configuration file [%s] removed!" % self.src_conf_path
-        # touch finish status
-        self.touch_status_file(self.DEFAULT_AGENT_JOB_STATUS['FINISH'])
+        # teardown of this task
+        self.teardown_job()
 
     def teardown(self):
         print "===== teardown ====="
@@ -229,5 +277,5 @@ class HasalTask(object):
         if os.path.exists(self.src_conf_path):
             os.remove(self.src_conf_path)
             print "INFO: tear down event, json configuration file [%s] removed!" % self.src_conf_path
-        # touch finish status
-        self.touch_status_file(self.DEFAULT_AGENT_JOB_STATUS['FINISH'])
+        # teardown of this task
+        self.teardown_job()

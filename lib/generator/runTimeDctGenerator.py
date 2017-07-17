@@ -3,7 +3,6 @@ import json
 import time
 import copy
 from baseGenerator import BaseGenerator
-from ..common.commonUtil import CalculationUtil
 from ..common.commonUtil import CommonUtil
 from ..common.imageUtil import generate_crop_data
 from ..common.imageUtil import crop_images
@@ -11,6 +10,7 @@ from ..common.imageUtil import convert_to_dct
 from ..common.visualmetricsWrapper import find_tab_view
 from ..common.imageUtil import find_browser_view
 from ..common.imageUtil import compare_with_sample_image_multi_process
+from ..common.imageUtil import CropRegion
 from ..common.visualmetricsWrapper import find_image_viewport
 from ..common.visualmetricsWrapper import calculate_progress_for_si
 from ..common.visualmetricsWrapper import calculate_speed_index
@@ -22,54 +22,46 @@ logger = get_logger(__name__)
 
 class RunTimeDctGenerator(BaseGenerator):
 
-    SEARCH_TARGET_VIEWPORT = 'viewport'
-    SEARCH_TARGET_TAB_VIEW = 'tab_view'
-    SEARCH_TARGET_BROWSER = 'browser'
-    SKIP_STATUS_BAR_FRACTION = 0.95
-    DEFAULT_CROP_TARGET_LIST = [SEARCH_TARGET_VIEWPORT, SEARCH_TARGET_TAB_VIEW, SEARCH_TARGET_BROWSER]
-    DEFAULT_SPEEDINDEX_GENERATOR_NAME = 'SpeedIndexGenerator'
-
     BROWSER_VISUAL_EVENT_POINTS = {
-        'backward_search': [{'event': 'first_paint', 'search_target': SEARCH_TARGET_VIEWPORT, 'fraction': SKIP_STATUS_BAR_FRACTION},
-                            {'event': 'start', 'search_target': SEARCH_TARGET_TAB_VIEW, 'fraction': 1.0}],
+        'backward_search': [{'event': 'first_paint', 'search_target': CropRegion.VIEWPORT, 'fraction': CropRegion.SKIP_STATUS_BAR_FRACTION},
+                            {'event': 'start', 'search_target': CropRegion.TAB_VIEW, 'fraction': CropRegion.FULL_REGION_FRACTION}],
         'forward_search': [
-            {'event': 'viewport_visual_complete', 'search_target': SEARCH_TARGET_VIEWPORT, 'fraction': 1.0},
-            {'event': 'end', 'search_target': SEARCH_TARGET_BROWSER, 'fraction': 1.0}]}
+            {'event': 'viewport_visual_complete', 'search_target': CropRegion.VIEWPORT, 'fraction': CropRegion.FULL_REGION_FRACTION},
+            {'event': 'end', 'search_target': CropRegion.BROWSER, 'fraction': CropRegion.FULL_REGION_FRACTION}]}
 
-    @staticmethod
-    def generate_sample_result(input_generator_name, input_sample_dict, input_sample_index):
+    def generate_sample_result(self, input_generator_name, input_sample_dict, input_sample_index):
         current_sample_data = copy.deepcopy(input_sample_dict)
         input_sample_data = current_sample_data[input_sample_index]
         sample_dct_obj = convert_to_dct(input_sample_data['fp'])
-        return_result = {input_generator_name: {'dct': sample_dct_obj, 'crop_data': {}}}
+        return_result = self.generate_sample_result_template(input_generator_name=input_generator_name, sample_dct_obj=sample_dct_obj)
 
         # crop sample data area
         # generate viewport crop area
-        if RunTimeDctGenerator.SEARCH_TARGET_VIEWPORT in input_sample_data:
-            return_result[input_generator_name]['crop_data'][RunTimeDctGenerator.SEARCH_TARGET_VIEWPORT] = input_sample_data[RunTimeDctGenerator.SEARCH_TARGET_VIEWPORT]
+        if CropRegion.VIEWPORT in input_sample_data:
+            return_result[input_generator_name]['crop_data'][CropRegion.VIEWPORT] = input_sample_data[CropRegion.VIEWPORT]
         else:
             viewport_value = find_image_viewport(input_sample_data['fp'])
-            return_result[input_generator_name]['crop_data'][RunTimeDctGenerator.SEARCH_TARGET_VIEWPORT] = viewport_value
-            return_result[RunTimeDctGenerator.SEARCH_TARGET_VIEWPORT] = viewport_value
+            return_result[input_generator_name]['crop_data'][CropRegion.VIEWPORT] = viewport_value
+            return_result[CropRegion.VIEWPORT] = viewport_value
 
         # generate tab_view crop area
-        if RunTimeDctGenerator.SEARCH_TARGET_TAB_VIEW in input_sample_data:
-            return_result[input_generator_name]['crop_data'][RunTimeDctGenerator.SEARCH_TARGET_TAB_VIEW] = input_sample_data[RunTimeDctGenerator.SEARCH_TARGET_TAB_VIEW]
+        if CropRegion.TAB_VIEW in input_sample_data:
+            return_result[input_generator_name]['crop_data'][CropRegion.TAB_VIEW] = input_sample_data[CropRegion.TAB_VIEW]
         else:
             tabview_value = find_tab_view(input_sample_data['fp'], return_result[input_generator_name]['crop_data'][
-                RunTimeDctGenerator.SEARCH_TARGET_VIEWPORT])
-            return_result[input_generator_name]['crop_data'][RunTimeDctGenerator.SEARCH_TARGET_TAB_VIEW] = tabview_value
-            return_result[RunTimeDctGenerator.SEARCH_TARGET_TAB_VIEW] = tabview_value
+                CropRegion.VIEWPORT])
+            return_result[input_generator_name]['crop_data'][CropRegion.TAB_VIEW] = tabview_value
+            return_result[CropRegion.TAB_VIEW] = tabview_value
 
         # generate browser crop area
-        if RunTimeDctGenerator.SEARCH_TARGET_BROWSER in input_sample_data:
-            return_result[input_generator_name]['crop_data'][RunTimeDctGenerator.SEARCH_TARGET_BROWSER] = input_sample_data[RunTimeDctGenerator.SEARCH_TARGET_BROWSER]
+        if CropRegion.BROWSER in input_sample_data:
+            return_result[input_generator_name]['crop_data'][CropRegion.BROWSER] = input_sample_data[CropRegion.BROWSER]
         else:
             browser_view_value = find_browser_view(
-                return_result[input_generator_name]['crop_data'][RunTimeDctGenerator.SEARCH_TARGET_VIEWPORT],
-                return_result[input_generator_name]['crop_data'][RunTimeDctGenerator.SEARCH_TARGET_TAB_VIEW])
-            return_result[input_generator_name]['crop_data'][RunTimeDctGenerator.SEARCH_TARGET_BROWSER] = browser_view_value
-            return_result[RunTimeDctGenerator.SEARCH_TARGET_BROWSER] = browser_view_value
+                return_result[input_generator_name]['crop_data'][CropRegion.VIEWPORT],
+                return_result[input_generator_name]['crop_data'][CropRegion.TAB_VIEW])
+            return_result[input_generator_name]['crop_data'][CropRegion.BROWSER] = browser_view_value
+            return_result[CropRegion.BROWSER] = browser_view_value
 
         # generate crop data
         if input_generator_name not in input_sample_dict[1]:
@@ -83,11 +75,11 @@ class RunTimeDctGenerator(BaseGenerator):
         # tag event to sample
         return_result[input_generator_name]['event_tags'] = {}
         if input_sample_index == 1:
-            for event_obj in RunTimeDctGenerator.BROWSER_VISUAL_EVENT_POINTS['backward_search']:
+            for event_obj in self.visual_event_points['backward_search']:
                 search_target_fp = crop_data_dict[event_obj['search_target']]['fp_list'][0]['output_fp']
                 return_result[input_generator_name]['event_tags'][event_obj['event']] = convert_to_dct(search_target_fp, event_obj['fraction'])
         elif input_sample_index == 2:
-            for event_obj in RunTimeDctGenerator.BROWSER_VISUAL_EVENT_POINTS['forward_search']:
+            for event_obj in self.visual_event_points['forward_search']:
                 search_target_fp = crop_data_dict[event_obj['search_target']]['fp_list'][0]['output_fp']
                 return_result[input_generator_name]['event_tags'][event_obj['event']] = convert_to_dct(search_target_fp, event_obj['fraction'])
 
@@ -132,9 +124,8 @@ class RunTimeDctGenerator(BaseGenerator):
         self.compare_result['merged_crop_image_list'] = input_image_list
         # compare images
         compare_setting = {'default_fps': self.index_config['video-recording-fps'],
-                           'event_points': self.BROWSER_VISUAL_EVENT_POINTS,
+                           'event_points': self.visual_event_points,
                            'generator_name': self.__class__.__name__,
-                           'skip_status_bar_fraction': self.SKIP_STATUS_BAR_FRACTION,
                            'exec_timestamp_list': input_data['exec_timestamp_list'],
                            'threshold': self.index_config.get('compare-threshold', 0.0003),
                            'search_margin': self.index_config.get('search-margin', 10)}
@@ -143,7 +134,7 @@ class RunTimeDctGenerator(BaseGenerator):
             input_image_list,
             compare_setting)
         if self.compare_result.get('running_time_result', None):
-            run_time, event_time_dict = CalculationUtil.runtime_calculation_event_point_base(self.compare_result['running_time_result'])
+            run_time, event_time_dict = self.calculate_runtime_base_on_event(self.compare_result['running_time_result'])
             self.compare_result.update({'run_time': run_time, 'event_time_dict': event_time_dict})
 
             if self.index_config['calculate-speed-index']:
@@ -159,12 +150,14 @@ class RunTimeDctGenerator(BaseGenerator):
             self.record_runtime_current_status(self.compare_result['run_time'])
 
             history_result_data = CommonUtil.load_json_file(self.env.DEFAULT_TEST_RESULT)
-            time_sequence = self.compare_result.get('time_sequence', [])
+            event_time_dict = self.compare_result.get('event_time_dict', {})
             si_value = self.compare_result.get('speed_index', 0)
             psi_value = self.compare_result.get('perceptual_speed_index', 0)
-            run_time_dict = {'run_time': self.compare_result['run_time'], 'folder': self.env.output_name,
-                             'time_sequence': time_sequence, 'si': si_value, 'psi': psi_value}
-            run_time_dict.update(self.compare_result['event_time_dict'])
+            run_time_dict = {'run_time': self.compare_result['run_time'],
+                             'folder': self.env.output_name,
+                             'event_time': event_time_dict,
+                             'si': si_value,
+                             'psi': psi_value}
 
             # init result dict if not exist
             init_result_dict = self.init_result_dict_variable(
@@ -187,6 +180,9 @@ class RunTimeDctGenerator(BaseGenerator):
                         update_result['perceptual_speed_index'] = (sorted_list[median_time_index]['psi'] + sorted_list[median_time_index + 1]['psi']) / 2
             history_result_data[self.env.test_name] = update_result
 
+            # write fps to history_result_data
+            history_result_data['video-recording-fps'] = self.index_config['video-recording-fps']
+
             # dump to json file
             with open(self.env.DEFAULT_TEST_RESULT, "wb") as fh:
                 json.dump(history_result_data, fh, indent=2)
@@ -200,3 +196,5 @@ class RunTimeDctGenerator(BaseGenerator):
             current_time = time.time()
             elapsed_time = current_time - start_time
             logger.debug("Generate Video Elapsed: [%s]" % elapsed_time)
+
+        self.clean_output_images(self.compare_result['running_time_result'], self.env.img_output_dp)

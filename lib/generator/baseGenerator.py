@@ -1,8 +1,10 @@
 import os
 import json
 import copy
+import time
 import shutil
 import tempfile
+from lib.common.imageUtil import CropRegion
 from ..common.commonUtil import CommonUtil
 from ..common.commonUtil import CalculationUtil
 from ..common.commonUtil import StatusRecorder
@@ -13,6 +15,9 @@ logger = get_logger(__name__)
 
 class BaseGenerator(object):
 
+    EVENT_START = 'start'
+    EVENT_END = 'end'
+
     def __init__(self, index_config, exec_config, online_config, global_config, input_env):
         self.index_config = index_config
         self.exec_config = exec_config
@@ -21,14 +26,55 @@ class BaseGenerator(object):
         self.status_recorder = StatusRecorder(global_config['default-running-statistics-fn'])
         self.env = input_env
 
+        # Loading Event Points settings for Customized Region
+        self.visual_event_points = self.BROWSER_VISUAL_EVENT_POINTS
+
+        sikuli_status = self.status_recorder.get_current_sikuli_status()
+        if StatusRecorder.SIKULI_KEY_REGION_OVERRIDE in sikuli_status:
+            self.visual_event_points = CropRegion.generate_customized_visual_event_points(sikuli_status,
+                                                                                          self.visual_event_points)
+
+    def generate_sample_result_template(self, input_generator_name, sample_dct_obj):
+        """
+        Generate the sample images information and cropping information.
+        @param input_generator_name:
+        @param sample_dct_obj:
+        @return:
+        """
+        ret = {
+            input_generator_name: {
+                'dct': sample_dct_obj,
+                'crop_data': {}
+            }
+        }
+        for direction, event_list in self.visual_event_points.items():
+            for event_obj in event_list:
+                if 'x' in event_obj and 'y' in event_obj and 'w' in event_obj and 'h' in event_obj:
+                    # The crop settings is {x, y, width, height}
+                    search_target = event_obj.get('search_target')
+                    ret[input_generator_name]['crop_data'][search_target] = {
+                        'x': event_obj.get('x'),
+                        'y': event_obj.get('y'),
+                        'width': event_obj.get('w'),
+                        'height': event_obj.get('h'),
+                    }
+        return ret
+
     def record_runtime_current_status(self, input_runtime_value):
         if input_runtime_value == 0:
+            # The running time result is zero
             self.status_recorder.record_current_status(
                 {self.status_recorder.STATUS_IMG_COMPARE_RESULT: self.status_recorder.ERROR_EVENT_IMAGE_BOTH_SAME})
         elif input_runtime_value == -1:
+            # The running time result is -1, which is default value, means can not calculate the running time
             self.status_recorder.record_current_status(
                 {self.status_recorder.STATUS_IMG_COMPARE_RESULT: self.status_recorder.ERROR_EVENT_IMAGE_LESS_THAN_2})
+        elif input_runtime_value < 0:
+            # The running time result is less than zero, means the event comparing failed. Finding the start after end event.
+            self.status_recorder.record_current_status(
+                {self.status_recorder.STATUS_IMG_COMPARE_RESULT: self.status_recorder.ERROR_EVENT_IMAGE_START_AFTER_END})
         else:
+            # The running time result is larger than zero, pass!
             self.status_recorder.record_current_status(
                 {self.status_recorder.STATUS_IMG_COMPARE_RESULT: self.status_recorder.PASS_IMG_COMPARE_RESULT})
 
@@ -82,14 +128,29 @@ class BaseGenerator(object):
         return sorted_list, median_time_index, update_result
 
     def output_runtime_result_video(self, running_time_result, suite_upload_dp):
-        start_fp = None
-        end_fp = None
-        for event_data in running_time_result:
-            if 'start' in event_data:
-                start_fp = event_data['start']
-            if 'end' in event_data:
-                end_fp = event_data['end']
+        """
+        Getting the video from START to END.
+        @param running_time_result: the running_time_result after do comparison.
+            ex:
+            [
+                {'event': 'start', 'file': 'foo/bar/9487.bmp', 'time_seq': 5487.9487},
+                {'event': 'end', 'file': 'foo/bar/9527.bmp', 'time_seq': 5566.5566}, ...
+            ]
+        @param suite_upload_dp: The folder path under "result" folder which be named by timestamp.
+        @return: The video file path if it exists.
+        """
+        # get start point and end point from input data
+        start_event = self.get_event_data_in_result_list(running_time_result,
+                                                         self.EVENT_START)
+        end_event = self.get_event_data_in_result_list(running_time_result,
+                                                       self.EVENT_END)
+        start_fp = start_event.get('file', None)
+        end_fp = end_event.get('file', None)
         if not start_fp or not end_fp:
+            logger.warning("Cannot get file path of either start event or end event, stop output video.")
+            return None
+        elif start_fp > end_fp:
+            logger.warning("Start point is behind End point, stop output video.")
             return None
         else:
             if os.path.exists(os.path.join(os.path.dirname(start_fp), self.global_config['default-search-target-browser'])):
@@ -97,6 +158,7 @@ class BaseGenerator(object):
             else:
                 source_dp = os.path.dirname(start_fp)
             img_list = os.listdir(source_dp)
+            img_list = [item for item in img_list if os.path.isfile(os.path.join(source_dp, item))]
             img_list.sort(key=CommonUtil.natural_keys)
             start_fn = os.path.basename(start_fp)
             end_fn = os.path.basename(end_fp)
@@ -121,12 +183,58 @@ class BaseGenerator(object):
         os.system(command)
         shutil.rmtree(tempdir)
 
+        # remove "test_<browser>_" and "_<timestamp>" from "test_<browser>_foo_bar_xyz_<timestamp>"
         upload_case_name = "_".join(self.env.output_name.split("_")[2:-1])
+        # set the output folder name as "<suite_upload_dp>/foo_bar_xyz"
         upload_case_dp = os.path.join(suite_upload_dp, upload_case_name)
         if os.path.exists(upload_case_dp) is False:
             os.mkdir(upload_case_dp)
         if os.path.exists(self.env.converted_video_output_fp):
             shutil.move(self.env.converted_video_output_fp, upload_case_dp)
+            filename = os.path.basename(self.env.converted_video_output_fp)
+            return os.path.join(upload_case_dp, filename)
+
+    def clean_output_images(self, running_time_result, img_dp):
+        # Start to clean image files only if flag enabled
+        if self.exec_config['clean-unnecessary-images']:
+            # get start point and end point from input data
+            start_event = self.get_event_data_in_result_list(running_time_result,
+                                                             self.EVENT_START)
+            end_event = self.get_event_data_in_result_list(running_time_result,
+                                                           self.EVENT_END)
+            start_fp = start_event.get('file', None)
+            end_fp = end_event.get('file', None)
+            if not start_fp or not end_fp:
+                logger.warning("Cannot get file path of either start event or end event, stop clean output images.")
+                return None
+            if start_fp > end_fp:
+                logger.warning("Start point is behind End point, stop clean output images.")
+                return None
+            else:
+                try:
+                    extend_buffer = self.exec_config['clean-unnecessary-images-extend-buffer']
+                    start_time = time.time()
+
+                    logger.info('Start clean output images based on compared result.')
+                    # keep images from start event to end event and remain extension buffer
+                    for root, dirs, files in os.walk(img_dp):
+                        start_fn = os.path.basename(start_fp)
+                        end_fn = os.path.basename(end_fp)
+                        start_index = max(0, files.index(start_fn) - extend_buffer)
+                        end_index = min(len(files) - 1, files.index(end_fn) + extend_buffer)
+
+                        logger.info('Cleaning {} ...'.format(root))
+                        for img_index in range(start_index) + range(end_index + 1, len(files)):
+                            img_fp = os.path.join(root, files[img_index])
+                            os.remove(img_fp)
+
+                    current_time = time.time()
+                    elapsed_time = current_time - start_time
+                    logger.debug("Clean Output Images Elapsed: [%s]" % elapsed_time)
+                except Exception as e:
+                    logger.warn(e)
+        else:
+            logger.debug("Clean unnecessary images flag is disabled, thus don't need to clean output images.")
 
     @staticmethod
     def output_ipynb_file(global_config, index_config, output_result_dir):
@@ -167,15 +275,81 @@ class BaseGenerator(object):
     @staticmethod
     def output_suite_result(global_config, index_config, exec_config, output_result_dir):
         # generate ipynb file
-        if exec_config['output-result-ipynb-file']:
-            BaseGenerator.output_ipynb_file(global_config, index_config, output_result_dir)
+        try:
+            if CommonUtil.get_value_from_config(config=exec_config, key='output-result-ipynb-file'):
+                BaseGenerator.output_ipynb_file(global_config, index_config, output_result_dir)
+        except Exception as e:
+            logger.error('Cannot output ipynb file. Error: {exp}'.format(exp=e))
 
         # move statistics file to result folder
-        running_statistics_fp = os.path.join(os.getcwd(), global_config['default-running-statistics-fn'])
-        if os.path.exists(running_statistics_fp):
-            shutil.move(running_statistics_fp, output_result_dir)
+        try:
+            stat_file_name = CommonUtil.get_value_from_config(config=global_config, key='default-running-statistics-fn')
+            if stat_file_name:
+                running_statistics_fp = os.path.join(os.getcwd(), stat_file_name)
+                if os.path.exists(running_statistics_fp):
+                    shutil.move(running_statistics_fp, output_result_dir)
+        except Exception as e:
+            logger.error('Cannot move statistics file to result folder. Error: {exp}'.format(exp=e))
 
         # copy current result file to result folder
-        result_fp = os.path.join(os.getcwd(), global_config['default-result-fn'])
-        if os.path.exists(result_fp):
-            shutil.copy(result_fp, output_result_dir)
+        try:
+            result_file_name = CommonUtil.get_value_from_config(config=global_config, key='default-result-fn')
+            if result_file_name:
+                result_fp = os.path.join(os.getcwd(), result_file_name)
+                if os.path.exists(result_fp):
+                    shutil.copy(result_fp, output_result_dir)
+        except Exception as e:
+            logger.error('Cannot copy result file to result folder. Error: {exp}'.format(exp=e))
+
+    @staticmethod
+    def get_event_data_in_result_list(event_result_list, event_name):
+        """
+        Return the event object which
+        @param event_result_list: the running_time_result after do comparison.
+            ex:
+            [
+                {'event': 'start', 'file': 'foo/bar/9487.bmp', 'time_seq': 5487.9487},
+                {'event': 'end', 'file': 'foo/bar/9527.bmp', 'time_seq': 5566.5566}, ...
+            ]
+        @param event_name: the event name
+        @return: return the object of event, ex: {'event': 'start', 'file': 'foo/bar/9487.bmp', 'time_seq': 5487.9487}
+        """
+        ret_list = filter(lambda x: x.get('event') == event_name, event_result_list)
+        if len(ret_list) > 0:
+            return ret_list[0]
+        return {}
+
+    @classmethod
+    def calculate_runtime_base_on_event(cls, input_running_time_result):
+        """
+        Calculate the running time base on input event result list.
+        The value comes from the "time_seq" of "start" and "end" event.
+        If the running time large than zero, it will also get all other event's running time base on "start" event, and store in event_time_dict.
+        @param input_running_time_result: the running_time_result after do comparison.
+            ex:
+            [
+                {'event': 'start', 'file': 'foo/bar/9487.bmp', 'time_seq': 5487.9487},
+                {'event': 'end', 'file': 'foo/bar/9527.bmp', 'time_seq': 5566.5566}, ...
+            ]
+        @return: (running time, dictionary which store all events time base on start event)
+        """
+        run_time = -1
+        event_time_dict = dict()
+
+        start_event = cls.get_event_data_in_result_list(input_running_time_result,
+                                                        cls.EVENT_START)
+        end_event = cls.get_event_data_in_result_list(input_running_time_result,
+                                                      cls.EVENT_END)
+        if start_event and end_event:
+            run_time = end_event.get('time_seq') - start_event.get('time_seq')
+            event_time_dict[cls.EVENT_START] = 0
+            event_time_dict[cls.EVENT_END] = run_time
+
+            if run_time > 0:
+                for custom_event in input_running_time_result:
+                    custom_event_name = custom_event.get('event')
+                    if custom_event_name != cls.EVENT_START \
+                            and custom_event_name != cls.EVENT_END:
+                        event_time_dict[custom_event_name] = custom_event.get('time_seq') - start_event.get('time_seq')
+
+        return run_time, event_time_dict

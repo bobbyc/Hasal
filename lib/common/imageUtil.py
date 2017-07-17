@@ -9,9 +9,109 @@ import threading
 from PIL import Image
 from multiprocessing import Process, Manager
 from commonUtil import CommonUtil
+from commonUtil import StatusRecorder
 from logConfig import get_logger
 
 logger = get_logger(__name__)
+
+
+class CropRegion(object):
+    """
+    Here's the Crop Region Fig
+
+    |----------------------------------|  ---             ---
+    |        |                         |   ^               ^
+    | Tab  X |                         |   V <= TAB_VIEW   |
+    |----------------------------------|  ---              |
+    |                                  |   ^               |
+    |                                  |   |               |
+    |                                  |   |               |
+    |            Web Page              |   | <= VIEWPORT   | <= BROWSER
+    |                                  |   |               |
+    |                                  |   |               |
+    |                                  |   v               v
+    |----------------------------------|  ---             ---
+
+    |----------------------------------|  ---
+    | $ Terminal> _                    |   ^ <= TERMINAL
+    |                                  |   V
+    |----------------------------------|  ---
+    """
+    # Hasal do NOT crop the original
+    ORIGINAL = 'original'
+
+    VIEWPORT = 'viewport'
+    TAB_VIEW = 'tab_view'
+    BROWSER = 'browser'
+    TERMINAL = 'terminal'
+
+    # Fraction settings for simple height cut
+    FULL_REGION_FRACTION = 1.0
+    SKIP_STATUS_BAR_FRACTION = 0.95
+
+    @staticmethod
+    def generate_customized_visual_event_points(sikuli_status, visual_event_points):
+        """
+        Looping the visual_event_points object, for example:
+            {
+                'fordward_search': [{'event': 'end', 'search_target': CropRegion.VIEWPORT, 'fraction': CropRegion.SKIP_STATUS_BAR_FRACTION, 'shift_result': True},
+                                    {'event': 'foobar', 'search_target': CropRegion.TERMINAL, 'fraction': CropRegion.FULL_REGION_FRACTION, 'shift_result': True}],
+                'backward_search': [{'event': 'xyztest', 'search_target': CropRegion.VIEWPORT, 'fraction': CropRegion.SKIP_STATUS_BAR_FRACTION, 'shift_result': True},
+                                    {'event': 'start', 'search_target': CropRegion.TERMINAL, 'fraction': CropRegion.FULL_REGION_FRACTION, 'shift_result': True}]
+            }
+
+        And then checking with region_override from Sikuli status:
+            {
+                'end':                                  # reference event name key
+                {
+                    'event': 'end',                     # event name
+                    'direction': 'backward',            # no use now
+                    'search_target': 'end_region',      # customized region name
+                    'shift_result': true,               # shift one image base on direction
+                    'fraction': 1,                      # Full Fraction
+                    'x': 94,                            # x
+                    'y': 87,                            # y
+                    'w': 94,                            # width
+                    'h': 99                             # height
+                }
+            }
+        @param sikuli_status: the sikuli status dict object, which comes from stat JSON file.
+        @param visual_event_points: the visual_event_point dict object, which comes from Generator instance.
+        @return: new visual_event_points dict object.
+        """
+        region_override_dict = sikuli_status[StatusRecorder.SIKULI_KEY_REGION_OVERRIDE]
+
+        for direction, origin_event_list in visual_event_points.items():
+            is_override = False
+            new_event_list = []
+            for origin_event_obj in origin_event_list:
+                is_match = False
+                for sikuli_event_key, sikuli_event_obj in region_override_dict.items():
+                    if sikuli_event_obj.get('event', '') == origin_event_obj.get('event', ''):
+                        is_override = True
+                        is_match = True
+                        new_event_obj = copy.deepcopy(origin_event_obj)
+                        new_event_obj['search_target'] = sikuli_event_obj.get('search_target')
+                        new_event_obj['shift_result'] = sikuli_event_obj.get('shift_result')
+                        # We should compare full customized region
+                        new_event_obj['fraction'] = CropRegion.FULL_REGION_FRACTION
+                        new_event_obj['x'] = sikuli_event_obj.get('x')
+                        new_event_obj['y'] = sikuli_event_obj.get('y')
+                        new_event_obj['w'] = sikuli_event_obj.get('w')
+                        new_event_obj['h'] = sikuli_event_obj.get('h')
+                        break
+                if is_match:
+                    new_event_list.append(new_event_obj)
+                else:
+                    new_event_list.append(origin_event_obj)
+
+            if is_override:
+                visual_event_points[direction] = new_event_list
+                logger.debug('Replace Visual Event Point [{dir}] from\n {origin_evt_list}\nto\n {new_evt_list}'
+                             .format(dir=direction,
+                                     origin_evt_list=origin_event_list,
+                                     new_evt_list=new_event_list))
+        return visual_event_points
 
 
 def crop_image(input_sample_fp, output_sample_fp, coord=[]):
@@ -201,7 +301,24 @@ def crop_multiple_images(input_image_list, input_crop_area):
 def compare_with_sample_image_multi_process(input_sample_data, input_image_data, input_settings):
     """
     Compare sample images, return matching list.
-    @param input_sample_dp: input sample folder path
+    return example:
+        [
+            {'event': 'start', 'file': 'foo/bar/9487.bmp', 'time_seq': 5487.9487},
+            {'event': 'end', 'file': 'foo/bar/9527.bmp', 'time_seq': 5566.5566}, ...
+        ]
+    @param input_sample_data:
+    @param input_image_data:
+    @param input_settings: the comparing settings.
+            ex:
+            {
+                'default_fps',
+                'event_points',
+                'generator_name',
+                'skip_status_bar_fraction',
+                'exec_timestamp_list',
+                'threshold',
+                'search_margin'
+            }
     @return: the matching result list
     """
     manager = Manager()
@@ -217,6 +334,8 @@ def compare_with_sample_image_multi_process(input_sample_data, input_image_data,
     for p in p_list:
         p.join()
     map_result_list = sorted(map(dict, result_list), key=lambda k: k['time_seq'])
+
+    logger.info('The threshold in comparing settings: {}'.format(input_settings.get('threshold', None)))
     logger.info(map_result_list)
     if len(map_result_list) == 0:
         logger.info('Images miss with sample.')
@@ -271,18 +390,30 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
 
     # generate search range
     search_margin = input_settings.get('search_margin', 10)
-    search_range = get_search_range(input_settings['exec_timestamp_list'], input_settings['default_fps'],
-                                    len(input_image_data), search_margin)
+    search_range = get_search_range(input_settings['exec_timestamp_list'],
+                                    input_settings['default_fps'],
+                                    len(input_image_data),
+                                    search_margin)
     total_search_range = input_settings['default_fps'] * search_margin * 2
-    if input_settings['search_direction'] == 'backward_search':
+    search_direction = input_settings.get('search_direction', None)
+    if search_direction == 'backward_search':
         start_index = search_range[1] - 1
         end_index = max(search_range[0], start_index - total_search_range)
-    elif input_settings['search_direction'] == 'forward_search':
+    elif search_direction == 'forward_search':
         start_index = search_range[2] - 1
         end_index = min(search_range[3] - 1, start_index + total_search_range)
     else:
         start_index = 0
         end_index = 0
+
+    # raise exception when no search direction, or image data length is less then range
+    if not search_direction or (start_index == 0 and end_index == 0):
+        raise Exception('There is no search_direction. settings: {}'.format(input_settings))
+    if search_range[0] > len(input_image_data) or search_range[2] > len(input_image_data):
+        raise Exception('The image length is less then start of search range. '
+                        'Image Length: {img_len}, search range: {range}'
+                        .format(img_len=len(input_image_data), range=search_range))
+
     search_count = 0
     img_index = start_index
     if end_index > start_index:
@@ -294,11 +425,12 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
                         start=start_index,
                         end=end_index))
 
-    for event_point in input_settings['event_points'][input_settings['search_direction']]:
+    for event_point in input_settings['event_points'][search_direction]:
         event_name = event_point['event']
         search_target = event_point['search_target']
+        fraction = event_point['fraction']
 
-        logger.info('Comapre event [{event_name}] at [{search_target}]: {forward_backward} from {start} to {end}'
+        logger.info('Compare event [{event_name}] at [{search_target}]: {forward_backward} from {start} to {end}'
                     .format(event_name=event_name,
                             search_target=search_target,
                             forward_backward='Forward' if forward_search else 'Backward',
@@ -316,11 +448,6 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
         if sample_dct is None:
             logger.error("Can't find the specify event[%s] in your sample data[%s]!" % (event_name, input_sample_data))
         else:
-            if event_name == 'first_paint':
-                skip_status_bar_fraction = input_settings['skip_status_bar_fraction']
-            else:
-                skip_status_bar_fraction = 1.0
-
             while search_count < total_search_range:
                 if forward_search and img_index > end_index:
                     break
@@ -331,20 +458,29 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
                 # transfer image index to image fn key
                 img_fn_key = image_fn_list[img_index]
                 if search_target in input_image_data[img_fn_key]:
-                    current_img_dct = convert_to_dct(input_image_data[img_fn_key][search_target], skip_status_bar_fraction)
-                    # assign customized threshold to comparison function if its in settings list
-                    threshold_value = input_settings.get('threshold', 0.0003)
-                    compare_result, diff_rate = compare_two_images(sample_dct, current_img_dct, threshold_value)
 
-                    # record the diff_rate
-                    diff_rate_list.append((event_name, img_fn_key, diff_rate))
+                    compare_result = False
+                    current_img_fp = input_image_data[img_fn_key][search_target]
+                    current_img_dct = convert_to_dct(current_img_fp, fraction)
+
+                    if current_img_dct is None:
+                        logger.error('Cannot convert the image [{image_file}] to DCT object for specify event[{event}]!'
+                                     .format(event=event_name, image_file=current_img_fp))
+                    else:
+                        # assign customized threshold to comparison function if its in settings list
+                        threshold_value = input_settings.get('threshold', 0.0003)
+                        compare_result, diff_rate = compare_two_images(sample_dct, current_img_dct, threshold_value)
+
+                        # record the diff_rate
+                        diff_rate_list.append((event_name, img_fn_key, diff_rate))
 
                     if compare_result:
+                        # when match (compare_result is True), check the current image index
                         logger.debug('Match {img_index} {img_filename}'.format(img_index=img_index,
                                                                                img_filename=img_fn_key))
-
                         if img_index == start_index:
-                            logger.debug(
+                            # when current index is the same as start index, it should expend the search range.
+                            logger.info(
                                 "Find matched file in boundary of search range, event point might out of search range.")
                             if forward_search:
                                 # if start index is already at boundary then break
@@ -358,9 +494,11 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
                                     break
                                 start_index = min(img_index + total_search_range / 2, search_range[3] - 1)
                                 logger.debug('Change start: {start}'.format(start=start_index))
+                            # compare the same image, reset current image index from new start
                             img_index = start_index
                         else:
-                            # shift one index to avoid boundary matching two events at the same time
+                            # when current index is not start index, it really match!
+                            # shift index to avoid boundary if we want to match more than one events at the same time.
                             if forward_search:
                                 start_index = img_index - 1
                                 end_index = min(search_range[3] - 1, start_index + total_search_range)
@@ -376,10 +514,13 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
                             if shift_result_flag:
                                 img_fn_key = image_fn_list[start_index]
                             search_count = 0
-                            result_list.append({event_name: input_image_data[img_fn_key]['fp'], 'time_seq': input_image_data[img_fn_key]['time_seq']})
+                            result_list.append({'event': event_name, 'file': input_image_data[img_fn_key]['fp'], 'time_seq': input_image_data[img_fn_key]['time_seq']})
                             logger.debug("Comparing %s point end %s" % (event_name, time.strftime("%c")))
+                            # compare next image, reset current image index from start
+                            img_index = start_index
                             break
                     else:
+                        # when not match (compare_result is False), compare next image
                         if forward_search:
                             img_index += 1
                         else:
@@ -392,7 +533,16 @@ def parallel_compare_image(input_sample_data, input_image_data, input_settings, 
 
 
 def compare_two_images(dct_obj_1, dct_obj_2, threshold):
+    """
+    Comparing two input DCT objects, if the difference rate less than threshold, then return True, otherwise False.
+    @param dct_obj_1: input DCT object
+    @param dct_obj_2: input DCT object
+    @param threshold: the comparing threshold
+    @return: (True/Fasle of match, the different rate of two input DCT objects)
+    """
     match = False
+    # setup default diff rate
+    diff_rate = 2
     try:
         row1, cols1 = dct_obj_1.shape
         row2, cols2 = dct_obj_2.shape

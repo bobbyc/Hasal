@@ -1,42 +1,66 @@
 # if you are putting your test script folders under {git project folder}/tests/, it will work fine.
 # otherwise, you either add it to system path before you run or hard coded it in here.
-sys.path.append(sys.argv[2])
+
+INPUT_LIB_PATH = sys.argv[1]
+sys.path.append(INPUT_LIB_PATH)
+
 import os
-import common
+import basecase
 import gsearch
+
 import shutil
 import browser
 import time
 
-# Disable Sikuli action and info log
-com = common.General()
-com.infolog_enable(0)
-com.set_mouse_delay(0)
 
-chrome = browser.Chrome()
-gs = gsearch.Gsearch()
+class Case(basecase.SikuliInputLatencyCase):
 
-chrome.clickBar()
-chrome.enterLink(sys.argv[3])
-gs.wait_gimage_loaded()
+    def run(self):
+        # Disable Sikuli action and info log
+        self.common.infolog_enable(False)
+        self.common.set_mouse_delay(0)
 
-sleep(2)
-gs.hover_result_image(1, 1)
-sample2_fp = os.path.join(sys.argv[4], sys.argv[5].replace('sample_1', 'sample_2'))
+        # Prepare
+        gs = gsearch.Gsearch()
+        sample1_fp = os.path.join(self.INPUT_IMG_SAMPLE_DIR_PATH, self.INPUT_IMG_OUTPUT_SAMPLE_1_NAME)
+        sample1_fp = sample1_fp.replace(os.path.splitext(sample1_fp)[1], '.png')
+        capture_width = int(self.INPUT_RECORD_WIDTH)
+        capture_height = int(self.INPUT_RECORD_HEIGHT)
 
-sleep(2)
-capture_width = int(sys.argv[6])
-capture_height = int(sys.argv[7])
+        # Launch browser
+        chrome = browser.Chrome()
 
-t1 = time.time()
-capimg2 = capture(0, 0, capture_width, capture_height)
+        # Access link and wait
+        chrome.clickBar()
+        chrome.enterLink(self.INPUT_TEST_TARGET)
+        gs.wait_gimage_loaded()
 
-mouseDown(Button.LEFT)
-com.system_print('[log]  Mouse up on first image')
-mouseUp(Button.LEFT)
-# gs.click_result_image(1, 1)
-sleep(1)
-t2 = time.time()
-com.updateJson({'t1': t1, 't2': t2}, sys.argv[8])
-shutil.move(capimg2, sample2_fp.replace(os.path.splitext(sample2_fp)[1], '.png'))
-com.set_mouse_delay()
+        # Wait for stable
+        sleep(2)
+
+        # PRE ACTIONS
+
+        # Record T1, and capture the snapshot image
+        # Input Latency Action
+        loc, screenshot, t1 = gs.il_click_image(capture_width, capture_height, 1, 1)
+
+        # In normal condition, a should appear within 100ms,
+        # but if lag happened, that could lead the show up after 100 ms,
+        # and that will cause the calculation of AIL much smaller than expected.
+        sleep(0.1)
+
+        # Record T2
+        t2 = time.time()
+
+        # POST ACTIONS
+        sleep(2)
+
+        # Write timestamp
+        self.common.updateJson({'t1': t1, 't2': t2}, self.INPUT_TIMESTAMP_FILE_PATH)
+
+        # Write the snapshot image
+        shutil.move(screenshot, sample1_fp)
+
+
+case = Case(sys.argv)
+case.run()

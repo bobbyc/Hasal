@@ -9,7 +9,11 @@ class General():
 
         if self.os.lower() == 'mac':
             self.control = Key.CMD
+            self.input_wheel_down_direction = WHEEL_UP
+            self.input_wheel_up_direction = WHEEL_DOWN
         else:
+            self.input_wheel_down_direction = WHEEL_DOWN
+            self.input_wheel_up_direction = WHEEL_UP
             self.control = Key.CTRL
 
     # This will take in an array of key combinations like [[Key.Enter], [Key.ENTER, Key.CTRL], ["8", Key.CTRL+Key.SHIFT]]
@@ -93,9 +97,20 @@ class General():
     def set_mouse_delay(self, sec=0.5):
         Settings.MoveMouseDelay = sec
 
+    def set_type_delay(self, sec=0):
+        Settings.TypeDelay = sec
+
     def system_print(self, content):
         sys.stdout.write(content + '\n')
         sys.stdout.flush()
+
+    def loop_type_key(self, key, loop_times, interval):
+        """
+        Loop to type specific key
+        """
+        for _ in range(loop_times):
+            type(key)
+            sleep(interval)
 
 
 class WebApp(object):
@@ -115,29 +130,81 @@ class WebApp(object):
 
         if self.os == 'mac':
             self.control = Key.CMD
+            self.input_wheel_down_direction = WHEEL_UP
+            self.input_wheel_up_direction = WHEEL_DOWN
         else:
             self.control = Key.CTRL
             self.alt = Key.ALT
+            self.input_wheel_down_direction = WHEEL_DOWN
+            self.input_wheel_up_direction = WHEEL_UP
 
-    def _wait_for_loaded(self, component, similarity=0.70):
+    @staticmethod
+    def _get_loop_times(object_amount, total_second, each_check_second):
         """
-        Wait for component loaded, max 5 sec
-        @param component: The waiting component
-        @param similarity: The similarity of component. Default: 0.70.
+        Getting the loop time base on the object_amount, total wait second, and each checking second, min is 1 time.
+        @param object_amount: total checking objects amount
+        @param total_second: total waiting second
+        @param each_check_second: the wait second for each object
+        @return:
+        """
+        return max(int(total_second / object_amount / each_check_second), 1)
+
+    def _wait_for_loaded(self, component, similarity=0.70, timeout=10):
+        """
+        Wait for component loaded. Default timeout is 10 sec, min is 1 sec.
+        @param component: Specify the wait component, which is an array of [Sikuli pattern, offset-x, offset-y].
+        @param timeout: Wait timeout second, the min timeout is 1 sec. Default is 10 sec.
+        @param similarity: The pattern comparing similarity, from 0 to 1. Default is 0.70.
+        @return: The object pattern and the match region object. (pattern, match_obj).
         """
         is_exists = False
-        for counter in range(50):
+        p = None
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
             if is_exists:
                 break
-            for pic, _, _ in component:
-                if exists(Pattern(pic).similar(similarity), 0.1):
+            for pic, offset_x, offset_y in component:
+                p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
+                if exists(p, wait_sec):
+                    is_exists = True
                     break
-        wait(Pattern(pic).similar(0.70), 1)
+        obj = wait(p, wait_sec)
+        return p, obj
 
-    def il_type(self, message, width, height, wait_component=None):
+    def wait_for_component_display(self, component, similarity=0.7, timeout=10):
+        """
+        Wait for component loaded. Default timeout is 10 sec, min is 1 sec.
+        @param component: Specify the wait component, which is an array of [Sikuli pattern, offset-x, offset-y].
+        @param timeout: Wait timeout second, the min timeout is 1 sec. Default is 10 sec.
+        @param similarity: The pattern comparing similarity, from 0 to 1. Default is 0.70.
+        @return: The object pattern and the match region object. (pattern, match_obj).
+        """
+        return self._wait_for_loaded(component, similarity=similarity, timeout=timeout)
+
+    def wait_pattern_for_vanished(self, pattern, timeout=10):
+        """
+        Wait for component loaded. Default timeout is 10 sec, min is 1 sec.
+        @param pattern: Specify the wait vanished pattern, which is an sikuli object pattern.
+        @param timeout: Wait timeout second, the min timeout is 1 sec. Default is 10 sec.
+        """
+        is_exists = True
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=1, total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
+            sleep(wait_sec)
+            if not exists(pattern, wait_sec):
+                is_exists = False
+                break
+        if is_exists:
+            raise Exception("Pattern {} doesn't vanish.".format(pattern))
+
+    def il_type(self, message, width, height, similarity=0.70, timeout=10, wait_component=None):
         # wait component exists
-        if not wait_component:
-            self._wait_for_loaded(wait_component)
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
 
         # Screenshot and get time for Input Latency
         action_name = '[log]  TYPE "{}"'.format(message)
@@ -145,7 +212,17 @@ class WebApp(object):
         type(message)
         return screenshot, current_time
 
-    def _click(self, action_name, component, similarity=0.70):
+    def il_key_type(self, key, action_name, width, height, similarity=0.70, timeout=10, wait_component=None):
+        # wait component exists
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
+
+        # Screenshot and get time for Input Latency
+        screenshot, current_time = self._screenshot_and_time(width=width, height=height, action_name=action_name)
+        type(key)
+        return screenshot, current_time
+
+    def _click(self, action_name, component, similarity=0.70, timeout=10, wait_component=None):
         """
         Click the component base on the specify image, offset, and similarity.
         @param action_name: The action name, which will be printed to stdout before click.
@@ -153,16 +230,74 @@ class WebApp(object):
         @param similarity: The similarity of image. Default: 0.70.
         @return: location
         """
-        for counter in range(50):
+        # wait component exists
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
+
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
             for pic, offset_x, offset_y in component:
                 p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
-                if exists(p, 0.1):
+                if exists(p, wait_sec):
                     if not self.common.is_infolog_enabled():
                         self.common.system_print(action_name)
-                    click(p)
                     loc = find(p).getTarget()
+                    click(p)
                     return loc
         raise Exception('Cannot {action}'.format(action=action_name))
+
+    def _doubleclick(self, action_name, component, similarity=0.70, timeout=10, wait_component=None):
+        """
+        Double click the component base on the specify image, offset, and similarity.
+        @param action_name: The action name, which will be printed to stdout before click.
+        @param component: The component you want to click. ex: GMAIL_REPLY.
+        @param similarity: The similarity of image. Default: 0.70.
+        @return: location
+        """
+        # wait component exists
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
+
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
+            for pic, offset_x, offset_y in component:
+                p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
+                if exists(p, wait_sec):
+                    if not self.common.is_infolog_enabled():
+                        self.common.system_print(action_name)
+                    loc = find(p).getTarget()
+                    doubleClick(p)
+                    return loc
+        raise Exception('Cannot {action}'.format(action=action_name))
+
+    def _click_without_exception(self, action_name, component, similarity=0.70, timeout=10, wait_component=None):
+        """
+        Same as click function but without raise exception if no match pattern
+        @param action_name: The action name, which will be printed to stdout before click.
+        @param component: The component you want to click. ex: GMAIL_REPLY.
+        @param similarity: The similarity of image. Default: 0.70.
+        @return: location
+        """
+        # wait component exists
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
+
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
+            for pic, offset_x, offset_y in component:
+                p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
+                if exists(p, wait_sec):
+                    if not self.common.is_infolog_enabled():
+                        self.common.system_print(action_name)
+                    loc = find(p).getTarget()
+                    click(p)
+                    return loc
 
     class CapturePoints(object):
         # specify the Input Latency capture points
@@ -171,7 +306,10 @@ class WebApp(object):
         AFTER_MOUSEUP = 3
 
     def _il_click(self, action_name, component, width, height,
-                  similarity=0.70, action_point=CapturePoints.BEFORE_MOUSEUP):
+                  action_point=CapturePoints.BEFORE_MOUSEUP,
+                  similarity=0.70,
+                  timeout=10,
+                  wait_component=None):
         """
         This `_il_click` method is written for detecting Input Latency.
         It will break down the `click` to `hover`, `mousedown`, `log`, and `mouseup`
@@ -184,10 +322,17 @@ class WebApp(object):
         @param action_point: Currently have three: `CAPTURE_BEFORE_MOUSEDOWN`, `CAPTURE_BEFORE_MOUSEUP`, and `CAPTURE_AFTER_MOUSEUP`.
         @return: location, screenshot for input latency, timestamp between mousedown and mouseup.
         """
-        for counter in range(50):
+        # wait component exists
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
+
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
             for pic, offset_x, offset_y in component:
                 p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
-                if exists(p, 0.1):
+                if exists(p, wait_sec):
                     # Hover
                     hover(p)
 
@@ -215,7 +360,8 @@ class WebApp(object):
                     return loc, screenshot, current_time
         raise Exception('Cannot {action}'.format(action=action_name))
 
-    def _screenshot_and_time(self, width, height, action_name='Task Screenshot and Get Current Timestamp'):
+    def _screenshot_and_time(self, width, height,
+                             action_name='Task Screenshot and Get Current Timestamp'):
         """
         Take the screen shot and current timestamp, and return.
         @param width: the screen capture width.
@@ -230,3 +376,96 @@ class WebApp(object):
         self.common.system_print(action_name)
 
         return screenshot, current_time
+
+    def il_hover(self, action_name, component, width, height, similarity=0.70, timeout=10, wait_component=None):
+        # wait component exists
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
+
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
+            for pic, offset_x, offset_y in component:
+                p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
+                if exists(p, 0.1):
+                    # Get location
+                    loc = find(p).getTarget()
+
+                    # Screenshot and get time for Input Latency
+                    screenshot, current_time = self._screenshot_and_time(width=width, height=height,
+                                                                         action_name=action_name)
+                    mouseMove(loc)
+
+                    # Return location, screenshot, and time
+                    return screenshot, current_time
+        raise Exception('Cannot {action}'.format(action=action_name))
+
+    def _exists(self, component, similarity=0.70, timeout=10, wait_component=None):
+        """
+        Check the component base on the specify image, offset, and similarity.
+        @param component: The component you want to click. ex: GMAIL_REPLY.
+        @param similarity: The similarity of image. Default: 0.70.
+        @return: true/false
+        """
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
+            for pic, offset_x, offset_y in component:
+                p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
+                if exists(p, wait_sec):
+                    return True
+        return False
+
+    def _mouseMove(self, action_name, component, similarity=0.70, timeout=10, wait_component=None):
+        """
+        mouseMove the component base on the specify image, offset, and similarity.
+        @param action_name: The action name, which will be printed to stdout before click.
+        @param component: The component you want to click. ex: GMAIL_REPLY.
+        @param similarity: The similarity of image. Default: 0.70.
+        @return: location
+        """
+        # wait component exists
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
+
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
+            for pic, offset_x, offset_y in component:
+                p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
+                if exists(p, wait_sec):
+                    if not self.common.is_infolog_enabled():
+                        self.common.system_print(action_name)
+                    mouseMove(p)
+                    loc = find(p).getTarget()
+                    return loc
+        raise Exception('Cannot {action}'.format(action=action_name))
+
+    def _wheel(self, action_name, component, input_direction, input_wheel_size, similarity=0.70, timeout=10, wait_component=None):
+        """
+        wheel the component base on the specify image, offset, and similarity.
+        @param action_name: The action name, which will be printed to stdout before click.
+        @param component: The component you want to click. ex: GMAIL_REPLY.
+        @param similarity: The similarity of image. Default: 0.70.
+        @return: location
+        """
+        # wait component exists
+        if wait_component:
+            self._wait_for_loaded(wait_component, similarity=similarity, timeout=timeout)
+
+        # get the loop time base on the pattern amount of component, min loop time is 10 times
+        wait_sec = 0.5
+        loop_time = self._get_loop_times(object_amount=len(component), total_second=timeout, each_check_second=wait_sec)
+        for counter in range(loop_time):
+            for pic, offset_x, offset_y in component:
+                p = Pattern(pic).similar(similarity).targetOffset(offset_x, offset_y)
+                if exists(p, wait_sec):
+                    if not self.common.is_infolog_enabled():
+                        self.common.system_print(action_name)
+                    wheel(p, input_direction, input_wheel_size)
+                    loc = find(p).getTarget()
+                    return loc
+        raise Exception('Cannot {action}'.format(action=action_name))
